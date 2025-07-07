@@ -7,7 +7,7 @@ on:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECR_REPOSITORY: ${{ github.event.repository.name }}-ecr-repo
   EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
   K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
 
