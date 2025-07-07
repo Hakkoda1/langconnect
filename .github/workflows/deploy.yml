@@ -1,0 +1,66 @@
+name: Deploy to EKS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+  K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create ECR repository if it doesn't exist
+        run: |
+          aws ecr describe-repositories --repository-names ${{ vars.ECR_REPOSITORY }} || \
+          aws ecr create-repository --repository-name ${{ vars.ECR_REPOSITORY }}
+
+      - name: Build, tag, and push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
+
+      - name: Create namespace if not exists
+        env:
+          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+        run: |
+          kubectl get namespace $K8S_NAMESPACE || kubectl create namespace $K8S_NAMESPACE
+
+      - name: Deploy to EKS
+        env:
+          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+        run: |
+          sed "s|<IMAGE_URL>|${{ env.IMAGE }}|g" k8s/deployment.yaml | kubectl apply -n $K8S_NAMESPACE -f -
+          kubectl apply -n $K8S_NAMESPACE -f k8s/service.yaml
+          kubectl apply -n $K8S_NAMESPACE -f k8s/env-secret.yaml || echo "No env-secret.yaml found"
+          kubectl rollout status deployment/<deployment-name> -n $K8S_NAMESPACE

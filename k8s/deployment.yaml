@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langconnect
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: langconnect
+  template:
+    metadata:
+      labels:
+        app: langconnect
+    spec:
+      containers:
+        - name: langconnect
+          image: <IMAGE_URL>  # reemplazado en el CI por sed
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: langconnect-env
