@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -47,21 +47,38 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Update kubeconfig
-        run: |
-          aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
 
       - name: Create namespace if not exists
-        env:
-          K8S_NAMESPACE: ${{ env.K8S_NAMESPACE }}
         run: |
-          kubectl get namespace $K8S_NAMESPACE || kubectl create namespace $K8S_NAMESPACE
+          kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy to EKS
-        env:
-          K8S_NAMESPACE: ${{ env.K8S_NAMESPACE }}
         run: |
-          sed "s|<IMAGE_URL>|${{ env.IMAGE }}|g" k8s/deployment.yaml | kubectl apply -n $K8S_NAMESPACE -f -
-          kubectl apply -n $K8S_NAMESPACE -f k8s/service.yaml
-          kubectl apply -n $K8S_NAMESPACE -f k8s/env-secret.yaml || echo "No env-secret.yaml found"
-          kubectl rollout status deployment/<deployment-name> -n $K8S_NAMESPACE
+          sed "s|<IMAGE_URL>|${{ env.IMAGE }}|g" k8s/deployment.yaml | kubectl apply -n ${{ env.K8S_NAMESPACE }} -f -
+          kubectl apply -n ${{ env.K8S_NAMESPACE }} -f k8s/service.yaml
+          kubectl apply -n ${{ env.K8S_NAMESPACE }} -f k8s/env-secret.yaml || echo "env-secret.yaml not found"
+          kubectl rollout status deployment/langconnect -n ${{ env.K8S_NAMESPACE }}
+
+      - name: Wait for LoadBalancer IP
+        id: wait-for-lb
+        run: |
+          echo "Waiting for LoadBalancer IP..."
+          for i in {1..30}; do
+            LB_HOST=$(kubectl get svc langconnect-service -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ ! -z "$LB_HOST" ]; then
+              echo "LB_HOST=$LB_HOST" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Attempt $i: Still waiting..."
+            sleep 10
+          done
+
+      - name: Deployment summary
+        if: steps.wait-for-lb.outputs.LB_HOST != ''
+        run: |
+          echo "## 🚀 LangConnect Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** http://${{ steps.wait-for-lb.outputs.LB_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Namespace:** ${{ env.K8S_NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster:** ${{ env.EKS_CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
